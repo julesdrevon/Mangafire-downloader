@@ -1,5 +1,6 @@
 import os
 import time
+import base64
 import requests
 import zipfile
 import re
@@ -391,20 +392,155 @@ def extract_page_image_elements(driver):
             unique_elements.append(img)
     return unique_elements
 
-def download_manga():
-    # --- INPUT UTILISATEUR ---
-    url = normalize_mangafire_url(input("🔗 Entrez l'URL de la page MangaFire : "))
-    if not url:
-        print("❌ URL vide. Exemple attendu : https://mangafire.to/read/xxx/fr/volume-1")
-        return
-    if "mangafire.to/read/" not in url:
-        print("❌ URL invalide. Colle une URL de chapitre MangaFire contenant /read/.")
+def _archive_and_cleanup(folder_name):
+    zip_filename = f"{folder_name}.zip"
+    print("\nZipper les fichiers...")
+    create_zip(folder_name, zip_filename)
+    for root, _, files in os.walk(folder_name):
+        for f in files:
+            os.remove(os.path.join(root, f))
+    os.rmdir(folder_name)
+    print("🧹 Nettoyage terminé. Dossier temporaire supprimé.")
+
+
+def _canvas_extract(driver, img_el):
+    """Extrait une image déjà rendue via canvas → bytes JPEG."""
+    data = driver.execute_script("""
+        var img = arguments[0];
+        if (!img.complete || img.naturalWidth === 0) return null;
+        var c = document.createElement('canvas');
+        c.width = img.naturalWidth; c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        try { return c.toDataURL('image/jpeg', 0.95); } catch(e) { return null; }
+    """, img_el)
+    if data and ',' in data:
+        return base64.b64decode(data.split(',', 1)[1])
+    return None
+
+
+def _get_mp_page(driver):
+    try:
+        p = driver.find_element(By.CSS_SELECTOR, "p.Viewer-module_pageNumber_2Ma3Q")
+        return int(p.text.split("/")[0].strip())
+    except Exception:
+        return None
+
+
+def _run_mangaplus(driver, url, folder_name):
+    driver.get(url)
+    WebDriverWait(driver, 30).until(lambda d: d.execute_script("return document.readyState") == "complete")
+    time.sleep(5)
+
+    # Total pages depuis le compteur MangaPlus.
+    total_raw = None
+    for _ in range(20):
+        try:
+            span = driver.find_element(By.CSS_SELECTOR, "p.Viewer-module_pageNumber_2Ma3Q span")
+            total_raw = int(span.text.replace("/", "").strip())
+            break
+        except Exception:
+            time.sleep(1)
+    if not total_raw:
+        total_raw = int(input("Nombre de pages non détecté. Entrez-le manuellement : ").strip())
+    total = max(1, total_raw - 3)  # ~3 pages de pub incluses dans le compteur
+    print(f"📖 {total} pages manga (compteur brut {total_raw} - 3 pubs).")
+    os.makedirs(folder_name, exist_ok=True)
+
+    # Attendre la première image.
+    print("⏳ Attente du chargement de la première image...")
+    for _ in range(30):
+        imgs = driver.find_elements(By.CSS_SELECTOR, "img.zao-image")
+        if imgs and any((img.get_attribute("src") or "").startswith("blob:") for img in imgs):
+            break
+        time.sleep(1)
+    else:
+        print("❌ Aucune image blob trouvée après 30s.")
         return
 
-    # Extraction automatique du nom pour le dossier
-    # Exemple URL: mangafire.to/read/mad.8020/fr/chapter-1
+    vw = driver.execute_script("return window.innerWidth")
+    vh = driver.execute_script("return window.innerHeight")
+    driver.execute_script(f"document.elementFromPoint({vw//2}, {vh//2})?.click()")
+    time.sleep(0.5)
+
+    # Naviguer jusqu'à la fin pour que toutes les images chargent dans le DOM.
+    print("📜 Navigation vers la fin du chapitre pour charger toutes les images...")
+    stuck = 0
+    prev_page = None
+    while stuck < 4:
+        cur = _get_mp_page(driver)
+        if cur == prev_page:
+            stuck += 1
+        else:
+            stuck = 0
+        prev_page = cur
+        if cur and cur >= total_raw - 1:
+            break
+        driver.execute_script(f"document.elementFromPoint({vw//4}, {vh//2})?.click()")
+        time.sleep(1.2)
+
+    time.sleep(2)
+
+    # Extraire toutes les images via canvas.
+    print("🖼️  Extraction des images via canvas...")
+    imgs = driver.find_elements(By.CSS_SELECTOR, "img.zao-image")
+    real_imgs = [img for img in imgs if (img.get_attribute("src") or "").startswith("blob:")]
+    print(f"  {len(real_imgs)} image(s) blob trouvée(s) dans le DOM.")
+
+    collected = {}
+    for idx, img in enumerate(real_imgs[:total]):
+        page_n = idx + 1
+        img_bytes = _canvas_extract(driver, img)
+        if img_bytes:
+            collected[page_n] = img_bytes
+            print(f"  ✅ Page {page_n}/{total} capturée")
+        else:
+            print(f"  ⚠️  Canvas échoué pour page {page_n}")
+
+    failed = []
+    for i in range(1, total + 1):
+        file_path = os.path.join(folder_name, f"{i:03d}.jpg")
+        if i in collected:
+            with open(file_path, 'wb') as f:
+                f.write(collected[i])
+        else:
+            open(os.path.join(folder_name, f"{i:03d}"), 'wb').close()
+            failed.append(i)
+
+    if failed:
+        print(f"\n⚠️  Pages manquantes : {failed}")
+
+    _archive_and_cleanup(folder_name)
+
+
+def download_manga():
+    raw = input("🔗 URL (MangaFire ou MangaPlus) : ").strip().strip('"').strip("'")
+    if not raw:
+        print("❌ URL vide.")
+        return
+
     download_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "download")
     os.makedirs(download_dir, exist_ok=True)
+
+    if "mangaplus.shueisha.co.jp/viewer/" in raw:
+        url = raw if raw.startswith("http") else "https://" + raw
+        chapter_id = url.rstrip("/").split("/")[-1]
+        folder_name = os.path.join(download_dir, f"mangaplus_{chapter_id}")
+        driver, browser_name = build_webdriver()
+        try:
+            print(f"🌐 Navigateur : {browser_name}")
+            _run_mangaplus(driver, url, folder_name)
+        except Exception as e:
+            print(f"💥 Erreur : {e}")
+        finally:
+            driver.quit()
+        input("\nAppuie sur Entrée pour fermer...")
+        return
+
+    url = normalize_mangafire_url(raw)
+    if not url or "mangafire.to/read/" not in url:
+        print("❌ URL non reconnue. Supporte MangaFire (/read/) et MangaPlus (/viewer/).")
+        input("\nAppuie sur Entrée pour fermer...")
+        return
 
     slug_match = re.search(r'/read/([^/]+)', url)
     folder_name = slug_match.group(1).replace('.', '_') if slug_match else "manga_download"
@@ -417,7 +553,6 @@ def download_manga():
     else:
         flare_cookies, flare_user_agent = None, None
 
-    # --- CONFIGURATION SELENIUM ---
     driver, browser_name = build_webdriver(user_agent=flare_user_agent)
 
     try:
@@ -533,16 +668,7 @@ def download_manga():
         if failed:
             print(f"\n⚠️  {len(failed)} page(s) manquante(s) (fichiers vides) : {failed}")
 
-        # --- ARCHIVAGE ---
-        print("\nZipper les fichiers...")
-        zip_filename = f"{folder_name}.zip" # Tu peux changer en .cbz ici si tu veux
-        create_zip(folder_name, zip_filename)
-
-        # Nettoyage (supprime le dossier d'images brutes)
-        for root, _, files in os.walk(folder_name):
-            for f in files: os.remove(os.path.join(root, f))
-        os.rmdir(folder_name)
-        print("🧹 Nettoyage terminé. Dossier temporaire supprimé.")
+        _archive_and_cleanup(folder_name)
 
     except RateLimitedError as e:
         print(f"⛔ {e}")

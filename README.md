@@ -2,19 +2,26 @@
 
 Projet perso vibecode — aucune garantie, aucun support, ça marche sur ma machine. Je suis sûr de rien techniquement, j'ai juste fait ce qui marchait de mon côté.
 
-Télécharge les chapitres/volumes de [MangaFire](https://mangafire.to) en images et les archive en `.zip`.
+Télécharge les chapitres/volumes de MangaFire et MangaPlus en images et les archive en `.zip`.
 
 ---
 
 ## Ce que ça fait
 
+### MangaFire
 1. Tu colles une URL MangaFire (ex: `https://mangafire.to/read/madd.90658/fr/volume-1`)
-2. FlareSolverr bypass Cloudflare et récupère les cookies de session
+2. FlareSolverr bypass Cloudflare et récupère les cookies de session (optionnel)
 3. Zen Browser s'ouvre avec les cookies injectés
 4. Tu charges les images manuellement dans le navigateur
 5. Tu appuies sur Entrée — le script vérifie que toutes les pages sont là
 6. Téléchargement avec retry automatique si le CDN bug (erreurs 520)
-7. Archive `.zip` créée, dossier temporaire supprimé
+7. Archive `.zip` créée dans `download/`
+
+### MangaPlus
+1. Tu colles une URL MangaPlus (ex: `https://mangaplus.shueisha.co.jp/viewer/7002474`)
+2. Zen Browser s'ouvre sur le viewer
+3. Le script navigue automatiquement page par page et capture les images (blob URLs)
+4. Archive `.zip` créée dans `download/`
 
 ---
 
@@ -22,7 +29,7 @@ Télécharge les chapitres/volumes de [MangaFire](https://mangafire.to) en image
 
 - **Python 3.11+**
 - **Zen Browser** installé *(Firefox-based — Chrome/Brave se font rediriger par Cloudflare à cause du TLS fingerprint)*
-- **FlareSolverr** qui tourne sur le réseau local (pour bypass Cloudflare)
+- **FlareSolverr** qui tourne sur le réseau local (MangaFire uniquement, optionnel)
 - **geckodriver** géré automatiquement via `webdriver-manager`
 
 ### Install deps
@@ -31,9 +38,9 @@ Télécharge les chapitres/volumes de [MangaFire](https://mangafire.to) en image
 pip install selenium requests webdriver-manager
 ```
 
-### FlareSolverr
+### FlareSolverr (MangaFire uniquement)
 
-FlareSolverr doit tourner avant de lancer le script. Par défaut le script cherche sur `http://192.168.1.49:8191/v1`. Change la variable d'env `FLARESOLVERR_URL` pour un autre endpoint.
+Le script propose d'utiliser FlareSolverr au démarrage (y/n). Si tu réponds `n`, le navigateur s'ouvre directement sans bypass. FlareSolverr doit tourner avant de lancer le script si tu réponds `y`.
 
 ```bash
 # Docker (exemple)
@@ -48,7 +55,7 @@ docker run -d -p 8191:8191 ghcr.io/flaresolverr/flaresolverr:latest
 python manga_downloader.py
 ```
 
-Le script demande l'URL au démarrage. Colle une URL de chapitre ou volume MangaFire.
+Le script demande une URL au démarrage. Colle une URL MangaFire ou MangaPlus.
 
 ---
 
@@ -57,7 +64,7 @@ Le script demande l'URL au démarrage. Colle une URL de chapitre ou volume Manga
 | Variable | Défaut | Description |
 |---|---|---|
 | `ZEN_BINARY` | auto-détecté | Chemin vers `zen.exe` si non standard |
-| `FLARESOLVERR_URL` | `http://192.168.1.49:8191/v1` | Endpoint FlareSolverr |
+| `FLARESOLVERR_URL` | `http://127.0.0.1:8191/v1` | Endpoint FlareSolverr |
 | `USE_FLARESOLVERR` | `1` | Mettre `0` pour désactiver |
 | `HEADLESS` | `0` | Mettre `1` pour mode headless (déconseillé) |
 | `DEBUG_DOM` | `1` | Mettre `0` pour désactiver les fichiers debug HTML |
@@ -82,9 +89,10 @@ Firefox a une empreinte TLS différente, moins associée aux bots. Zen Browser e
 
 ## Limites connues
 
-- MangaFire seulement (pas prévu pour d'autres sites)
+- MangaFire et MangaPlus seulement
 - Cloudflare change régulièrement — si ça casse, c'est la vie
-- Les images doivent être chargées manuellement dans le navigateur (lazy loading non automatisé)
+- MangaFire : les images doivent être chargées manuellement dans le navigateur
+- MangaPlus : navigation automatique page par page, peut rater des pages si le viewer lag
 - Projet vibecode : le code est fonctionnel, pas propre
 
 ---
