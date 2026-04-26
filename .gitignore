@@ -1,0 +1,20 @@
+# Environnement virtuel
+.venv/
+
+# Profil navigateur persistant
+.browser-profile-firefox/
+.browser-profile/
+
+# Téléchargements
+download/*
+
+# Fichiers debug
+debug_*.html
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Env
+.env
